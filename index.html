@@ -92,6 +92,12 @@
   .meter .v.muted{color:var(--ink-3)}
 
   .controls{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .vu{
+    width:72px;height:8px;border-radius:999px;background:var(--surface-2);
+    border:1px solid var(--line);overflow:hidden;margin-top:5px;
+  }
+  .vu i{display:block;height:100%;width:0%;background:var(--accent);transition:width .08s linear}
+  .vu i.hot{background:var(--live)}
   .field{display:flex;flex-direction:column;gap:2px}
   .field .k{font-size:10px;letter-spacing:.12em;color:var(--ink-3);padding-inline-start:2px}
 
@@ -275,6 +281,7 @@
       <div class="meter"><span class="k">経過</span><span class="v muted" id="mElapsed">00:00</span></div>
       <div class="meter"><span class="k">文字数</span><span class="v muted" id="mChars">0</span></div>
       <div class="meter"><span class="k">次のまとめ</span><span class="v muted" id="mNext">—</span></div>
+      <div class="meter"><span class="k">マイク音量</span><div class="vu"><i id="vuBar"></i></div></div>
     </div>
 
     <div class="controls">
@@ -322,7 +329,8 @@
           <h3>はじめかた</h3>
           <ol>
             <li><span>右上の<b>⚙</b>を開いて、使うAIと<b>APIキー</b>を入れる（初回だけ）。「接続テスト」が通ればOKです。</span></li>
-            <li><span>会議の音を<b>スピーカーから出す</b>。Zoom / Google Meet / Teams / LINE、アプリは問いません。<span class="warn">イヤホンだと相手の声がマイクに入らず、自分の発言しか残りません。</span></span></li>
+            <li><span>会議の音を<b>スピーカーから出す</b>。Zoom / Google Meet / Teams / LINE、アプリは問いません。<span class="warn">イヤホン・ヘッドセットだと相手の声は入りません。</span></span></li>
+            <li><span><b>相手の声が拾えないとき</b>は、通話はPCで続けたまま、このページを<b>スマホで開いてスピーカーの横に置く</b>。別の端末なら相手の声が消されないので確実です。</span></li>
             <li><span><b>「録音を開始」</b>を押してマイクを許可。あとは話すだけで、右のまとめが自動で更新され続けます。</span></li>
           </ol>
         </div>
@@ -375,6 +383,15 @@
         <button class="btn" type="button" id="btnPeek">表示</button>
       </div>
       <p class="help" id="keyHelp"></p>
+    </div>
+
+    <div class="row">
+      <label>マイクの拾い方</label>
+      <label class="switch" for="aecOff" style="font-size:13.5px;color:var(--ink)">
+        <input type="checkbox" id="aecOff" checked>
+        通話相手の声も拾う（エコー除去を切る）
+      </label>
+      <p class="help">スピーカーから出ている相手の声が消されないようにします。パソコンによっては効かないことがあるので、上の「マイク音量」のバーが相手の声で動くかを確認してください。動かない場合は、スマホでこのページを開いてスピーカーの横に置くのが確実です。</p>
     </div>
 
     <div class="row">
@@ -559,7 +576,7 @@
   var MIN_NEW_CHARS = 100;
   var MAX_CHUNK_CHARS = 14000;
 
-  var cfg = { provider:"gemini", key:"", models:{} };
+  var cfg = { provider:"gemini", key:"", models:{}, aecOff:true };
   var mode = "meeting", autoMs = 120000;
   var lines = [], summary = null;
   var startedAt = null, accumSec = 0, runFrom = null;
@@ -579,6 +596,7 @@
   var dlg=$("dlg"), provSeg=$("provSeg"), provHelp=$("provHelp"), keyInput=$("keyInput");
   var keyHelp=$("keyHelp"), modelInput=$("modelInput"), btnPeek=$("btnPeek");
   var btnTest=$("btnTest"), btnForget=$("btnForget"), btnSaveKey=$("btnSaveKey"), testOut=$("testOut");
+  var aecOffBox=$("aecOff"), vuBar=$("vuBar");
   var interimEl = null;
 
   /* ==================== helpers ==================== */
@@ -617,6 +635,7 @@
       cfg.provider = PROVIDERS[d.provider] ? d.provider : "gemini";
       cfg.key = typeof d.key==="string" ? d.key : "";
       cfg.models = (d.models && typeof d.models==="object") ? d.models : {};
+      cfg.aecOff = d.aecOff !== false;
     } } catch(e){} }
   }
   function saveCfg(){ store(LS_CFG, JSON.stringify(cfg)); }
@@ -635,6 +654,7 @@
     a.textContent = p.keyUrl;
     keyHelp.appendChild(document.createTextNode(p.keyHelp + " → "));
     keyHelp.appendChild(a);
+    aecOffBox.checked = cfg.aecOff !== false;
     keyInput.value = cfg.key || "";
     keyInput.type = "password";
     btnPeek.textContent = "表示";
@@ -895,18 +915,76 @@
     if(!startedAt) startedAt=Date.now();
     runFrom=Date.now();
     if(!lastSumAt) lastSumAt=Date.now();
-    if(!rec) rec=buildRec();
-    try{ rec.start(); }catch(e){}
     requestWakeLock();
+
+    // claim the device with our own constraints first, then hand over to
+    // recognition; if that fails for any reason, start recognition anyway.
+    var started=false;
+    var go=function(){ if(started) return; started=true; safeStart(); };
+    setTimeout(go, 1500);
+    openMic().then(go, go);
   }
   function stop(){
     wantListening=false; clearTimeout(restartTimer);
     if(runFrom){ accumSec += (Date.now()-runFrom)/1000; runFrom=null; }
     try{ if(rec) rec.stop(); }catch(e){}
+    closeMic();
     recDot.classList.remove("live");
     btnToggle.textContent="録音を再開"; btnToggle.className="btn primary";
     releaseWakeLock(); scheduleSave();
   }
+  /* ---- mic stream + level meter ----
+     Opening the device ourselves with echoCancellation off, BEFORE speech
+     recognition grabs it, is what gives the far end's voice a chance to
+     survive. It also drives the level meter, which is how the user can tell
+     whether the other person is reaching the microphone at all. */
+  var micStream=null, audioCtx=null, meterRAF=null;
+
+  function setMeter(v){
+    var pct = Math.max(0, Math.min(1, v));
+    vuBar.style.width = (pct*100).toFixed(0) + "%";
+    vuBar.className = pct > 0.85 ? "hot" : "";
+  }
+  function openMic(){
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return Promise.resolve(null);
+    var audio = cfg.aecOff
+      ? { echoCancellation:false, noiseSuppression:false, autoGainControl:false }
+      : true;
+    return navigator.mediaDevices.getUserMedia({ audio: audio })
+      .catch(function(){
+        // some devices refuse the relaxed constraints outright
+        return navigator.mediaDevices.getUserMedia({ audio: true }).catch(function(){ return null; });
+      })
+      .then(function(st){
+        if(!st) return null;
+        micStream = st;
+        try{
+          audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+          var src = audioCtx.createMediaStreamSource(st);
+          var an = audioCtx.createAnalyser();
+          an.fftSize = 1024;
+          src.connect(an);
+          var buf = new Uint8Array(an.fftSize), smooth = 0;
+          (function loop(){
+            meterRAF = requestAnimationFrame(loop);
+            an.getByteTimeDomainData(buf);
+            var peak = 0;
+            for(var i=0;i<buf.length;i++){ var d=Math.abs(buf[i]-128); if(d>peak) peak=d; }
+            var lvl = Math.min(1, peak/55);
+            smooth = lvl > smooth ? lvl : smooth*0.88 + lvl*0.12;
+            setMeter(smooth);
+          })();
+        }catch(e){}
+        return st;
+      });
+  }
+  function closeMic(){
+    if(meterRAF){ cancelAnimationFrame(meterRAF); meterRAF=null; }
+    setMeter(0);
+    if(micStream){ micStream.getTracks().forEach(function(t){ try{ t.stop(); }catch(e){} }); micStream=null; }
+    if(audioCtx){ try{ audioCtx.close(); }catch(e){} audioCtx=null; }
+  }
+
   function requestWakeLock(){
     if(!navigator.wakeLock||wakeLock) return;
     navigator.wakeLock.request("screen").then(function(w){
@@ -1090,6 +1168,7 @@
   btnSaveKey.addEventListener("click", function(){
     cfg.key = keyInput.value.trim();
     cfg.models[cfg.provider] = modelInput.value.trim() || PROVIDERS[cfg.provider].defaultModel;
+    cfg.aecOff = aecOffBox.checked;
     saveCfg(); syncAiButtons();
     dlg.close();
     toast(hasKey() ? PROVIDERS[cfg.provider].name+"を使う設定にしました" : "キーが空のままです");
