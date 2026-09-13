@@ -198,6 +198,7 @@
   .sec[data-kind="qa"] .q{font-weight:500}
   .sec[data-kind="qa"] .a{color:var(--ink-2);font-size:13.5px;margin-top:3px;padding-left:12px;border-left:2px solid var(--accent-soft)}
   .sec[data-kind="qa"] .a.empty{color:var(--amber);border-left-color:var(--amber-soft)}
+  .sec[data-kind="remember"] li::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--accent);margin-top:.45em}
   .sec[data-kind="stuck"] li::before{content:"!";font-family:var(--mono);font-size:12px;font-weight:700;color:var(--amber);margin-top:.2em}
 
   .chips{display:inline-flex;gap:5px;flex-wrap:wrap;margin-inline-start:7px;vertical-align:middle}
@@ -290,6 +291,7 @@
         <select class="sel" id="modeSel">
           <option value="meeting">打ち合わせ</option>
           <option value="training">研修</option>
+          <option value="casual">普通の会話</option>
         </select>
       </div>
       <div class="field">
@@ -317,6 +319,7 @@
     <section class="panel transcript">
       <div class="panel-head">
         <h2>文字起こし</h2>
+        <span class="stamp" id="engineTag"></span>
         <div class="tail">
           <label class="switch" for="autoScroll"><input type="checkbox" id="autoScroll" checked>追従</label>
           <button class="btn ghost" id="btnMark">区切りを入れる</button>
@@ -330,7 +333,8 @@
           <ol>
             <li><span>右上の<b>⚙</b>を開いて、使うAIと<b>APIキー</b>を入れる（初回だけ）。「接続テスト」が通ればOKです。</span></li>
             <li><span>会議の音を<b>スピーカーから出す</b>。Zoom / Google Meet / Teams / LINE、アプリは問いません。<span class="warn">イヤホン・ヘッドセットだと相手の声は入りません。</span></span></li>
-            <li><span><b>相手の声が拾えないとき</b>は、通話はPCで続けたまま、このページを<b>スマホで開いてスピーカーの横に置く</b>。別の端末なら相手の声が消されないので確実です。</span></li>
+            <li><span><b>聞き取りが甘いとき</b>は、⚙の「文字起こしの方式」を<b>Gemini（高精度）</b>に変える。25秒ほど遅れて出ますが、スピーカー越しの声にずっと強くなります。</span></li>
+            <li><span>それでも<b>相手の声が入らないとき</b>は、通話はPCのまま、このページを<b>スマホで開いてスピーカーの横に置く</b>。別の端末なら相手の声が消されないので確実です。</span></li>
             <li><span><b>「録音を開始」</b>を押してマイクを許可。あとは話すだけで、右のまとめが自動で更新され続けます。</span></li>
           </ol>
         </div>
@@ -386,6 +390,20 @@
     </div>
 
     <div class="row">
+      <label>文字起こしの方式</label>
+      <div class="seg" id="engineSeg">
+        <button type="button" data-engine="browser" aria-pressed="true">ブラウザ内蔵</button>
+        <button type="button" data-engine="gemini" aria-pressed="false">Gemini（高精度）</button>
+      </div>
+      <p class="help" id="engineHelp"></p>
+      <div class="seg" id="chunkSeg" style="margin-top:4px">
+        <button type="button" data-chunk="25" aria-pressed="true">25秒ごと</button>
+        <button type="button" data-chunk="60" aria-pressed="false">60秒ごと（長い会議向け）</button>
+      </div>
+      <p class="help" id="chunkHelp"></p>
+    </div>
+
+    <div class="row">
       <label>マイクの拾い方</label>
       <label class="switch" for="aecOff" style="font-size:13.5px;color:var(--ink)">
         <input type="checkbox" id="aecOff" checked>
@@ -428,6 +446,35 @@
       keyUrl: "https://aistudio.google.com/apikey",
       keyHelp: 'Google AI Studio で無料で作れます。上のリンクを開いて「Create API key」。AIza… で始まる文字列です。',
       help: "無料枠がいちばん大きく、日本語も安定しています。迷ったらこれ。",
+      transcribe: function (key, model, b64wav, signal) {
+        return fetch(
+          "https://generativelanguage.googleapis.com/v1beta/models/" +
+            encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(key),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            signal: signal,
+            body: JSON.stringify({
+              contents: [{ role: "user", parts: [
+                { text:
+                  "この音声を日本語で文字起こししてください。電話やWeb会議をスピーカー越しに録音した音声なので、音質は良くありません。\n" +
+                  "・聞き取れた発言だけを書く。話者が変わったら改行する。\n" +
+                  "・言い淀み（えー、あのー）は省く。句読点は補う。\n" +
+                  "・どうしても聞き取れない部分は書かない。何も聞き取れなければ空で返す。\n" +
+                  "・前置き、説明、記号は書かない。文字起こしの本文だけを返す。" },
+                { inline_data: { mime_type: "audio/wav", data: b64wav } }
+              ]}],
+              generationConfig: { temperature: 0, maxOutputTokens: 2048 }
+            })
+          }
+        ).then(readJson).then(function (d) {
+          var c = d && d.candidates && d.candidates[0];
+          var parts = c && c.content && c.content.parts;
+          var out = "";
+          if (parts) for (var i = 0; i < parts.length; i++) if (parts[i].text) out += parts[i].text;
+          return out.trim();
+        });
+      },
       call: function (key, model, prompt, signal) {
         return fetch(
           "https://generativelanguage.googleapis.com/v1beta/models/" +
@@ -568,7 +615,25 @@
         "- actions: 宿題・持ち帰り・次までにやること。owner（誰が）とdue（いつまで）は出てこなければ空文字 \"\"。最大8件。\n"
     }
   };
-  var ALL_KINDS = ["topics","decisions","actions","open","qa","stuck"];
+  MODES.casual = {
+    label: "普通の会話", docTitle: "会話メモ",
+    secs: [
+      { kind:"topics",   label:"話したこと",             hint:"どんな話題が出たかが並びます。" },
+      { kind:"remember", label:"覚えておきたいこと",      hint:"相手の近況・事情・好みなど、次に話すときに効いてくること。" },
+      { kind:"actions",  label:"約束したこと",           hint:"やると言ったこと。日にちが出ていればタグで付きます。" },
+      { kind:"open",     label:"聞きそびれ・次に話したいこと", hint:"流れてしまった話題や、続きが気になること。" }
+    ],
+    shape: '{"topics":["…"],"remember":["…"],"actions":[{"task":"…","owner":"…","due":"…"}],"open":["…"]}',
+    role: "あなたは日本語の会話メモアシスタントです。以下は音声認識による日常会話・雑談・電話の書き起こしです。",
+    rules:
+      "- topics: 出た話題の要点。各1文、最大8件。\n" +
+      "- remember: 相手の近況・状況・仕事や家族のこと・好みや苦手なものなど、次に話すときに覚えておくと良いこと。最大8件。\n" +
+      "- actions: 約束したこと、やると言ったこと。owner（誰が）とdue（いつ）は出てこなければ空文字 \"\"。最大6件。\n" +
+      "- open: 聞きそびれたこと、話が流れてしまったこと、次に聞きたいこと。最大5件。\n" +
+      "- 会議の議事録のような堅い言葉にせず、あとで自分が読んで思い出せる自然な書き方にする。\n"
+  };
+
+  var ALL_KINDS = ["topics","decisions","actions","open","qa","stuck","remember"];
 
   /* ==================== state ==================== */
   var LS = "live-minutes.std.v1";
@@ -576,7 +641,7 @@
   var MIN_NEW_CHARS = 100;
   var MAX_CHUNK_CHARS = 14000;
 
-  var cfg = { provider:"gemini", key:"", models:{}, aecOff:true };
+  var cfg = { provider:"gemini", key:"", models:{}, aecOff:true, engine:"browser", chunkSec:25 };
   var mode = "meeting", autoMs = 120000;
   var lines = [], summary = null;
   var startedAt = null, accumSec = 0, runFrom = null;
@@ -596,7 +661,8 @@
   var dlg=$("dlg"), provSeg=$("provSeg"), provHelp=$("provHelp"), keyInput=$("keyInput");
   var keyHelp=$("keyHelp"), modelInput=$("modelInput"), btnPeek=$("btnPeek");
   var btnTest=$("btnTest"), btnForget=$("btnForget"), btnSaveKey=$("btnSaveKey"), testOut=$("testOut");
-  var aecOffBox=$("aecOff"), vuBar=$("vuBar");
+  var aecOffBox=$("aecOff"), vuBar=$("vuBar"), engineSeg=$("engineSeg"), engineHelp=$("engineHelp");
+  var engineTag=$("engineTag"), chunkSeg=$("chunkSeg"), chunkHelp=$("chunkHelp");
   var interimEl = null;
 
   /* ==================== helpers ==================== */
@@ -636,6 +702,8 @@
       cfg.key = typeof d.key==="string" ? d.key : "";
       cfg.models = (d.models && typeof d.models==="object") ? d.models : {};
       cfg.aecOff = d.aecOff !== false;
+      cfg.engine = d.engine === "gemini" ? "gemini" : "browser";
+      cfg.chunkSec = (d.chunkSec===60) ? 60 : 25;
     } } catch(e){} }
   }
   function saveCfg(){ store(LS_CFG, JSON.stringify(cfg)); }
@@ -654,6 +722,24 @@
     a.textContent = p.keyUrl;
     keyHelp.appendChild(document.createTextNode(p.keyHelp + " → "));
     keyHelp.appendChild(a);
+    Array.prototype.forEach.call(engineSeg.querySelectorAll("button"), function(b){
+      b.setAttribute("aria-pressed", b.dataset.engine === cfg.engine ? "true" : "false");
+      b.disabled = (b.dataset.engine === "gemini" && cfg.provider !== "gemini");
+    });
+    engineHelp.textContent = cfg.provider !== "gemini"
+      ? "高精度モードはGeminiでのみ使えます。上で「Gemini」を選ぶと有効になります。"
+      : (cfg.engine === "gemini"
+          ? "25秒ずつ音声をGeminiに送って文字起こしします。精度は大きく上がりますが、画面に出るのは25〜40秒あとになります。スピーカー越しの通話や、雑音の多い場所ではこちらが確実です。"
+          : "ブラウザの音声認識をそのまま使います。すぐ画面に出ますが、スピーカー越しの声や雑音には弱いです。");
+    var gem = cfg.engine==="gemini" && cfg.provider==="gemini";
+    chunkSeg.hidden = !gem;
+    chunkHelp.hidden = !gem;
+    Array.prototype.forEach.call(chunkSeg.querySelectorAll("button"), function(b){
+      b.setAttribute("aria-pressed", Number(b.dataset.chunk)===cfg.chunkSec ? "true" : "false");
+    });
+    chunkHelp.textContent = cfg.chunkSec===60
+      ? "2時間で約120回Geminiを呼びます。長い研修でも無料枠に収まりやすい設定です。画面に出るまで1分ほどかかります。"
+      : "2時間で約290回Geminiを呼びます。反応は速いですが、半日以上の研修だと無料の1日あたり上限に届くことがあります。その場合は60秒ごとに。";
     aecOffBox.checked = cfg.aecOff !== false;
     keyInput.value = cfg.key || "";
     keyInput.type = "password";
@@ -664,6 +750,15 @@
   }
   function openDlg(){ renderDlg(); if (dlg.showModal) dlg.showModal(); else dlg.setAttribute("open",""); }
 
+  function setEngineTag(){
+    if(cfg.engine==="gemini" && cfg.provider==="gemini" && hasKey()){
+      engineTag.textContent = sending ? "Gemini文字起こし・送信中" : "Gemini文字起こし（25秒ごと）";
+      engineTag.className = "stamp" + (sending ? " working" : "");
+    } else {
+      engineTag.textContent = "";
+      engineTag.className = "stamp";
+    }
+  }
   function syncAiButtons(){
     var ok = hasKey();
     btnSumNow.disabled = !ok || busy;
@@ -917,17 +1012,37 @@
     if(!lastSumAt) lastSumAt=Date.now();
     requestWakeLock();
 
-    // claim the device with our own constraints first, then hand over to
-    // recognition; if that fails for any reason, start recognition anyway.
+    // Claim the device with our own constraints first. Then either start the
+    // browser recogniser, or begin cutting audio chunks for Gemini.
     var started=false;
-    var go=function(){ if(started) return; started=true; safeStart(); };
-    setTimeout(go, 1500);
-    openMic().then(go, go);
+    var go=function(micOk){
+      if(started) return;
+      started=true;
+      var useGemini = cfg.engine==="gemini" && cfg.provider==="gemini" && hasKey() && micOk;
+      if(useGemini){
+        chunkStartSec = Math.round(elapsedSec());
+        pcmBuf=[]; pcmSamples=0; sttFails=0;
+        if(chunkTimer) clearInterval(chunkTimer);
+        chunkTimer = setInterval(cutChunk, (cfg.chunkSec||25)*1000);
+        recDot.classList.add("live");
+        btnToggle.textContent="停止"; btnToggle.className="btn stop";
+        setEngineTag();
+      } else {
+        if(cfg.engine==="gemini" && !micOk){
+          showNotice("マイクを開けなかったため、ブラウザ内蔵の文字起こしで続けます。", true);
+        }
+        setEngineTag();
+        safeStart();
+      }
+    };
+    setTimeout(function(){ go(false); }, 2500);
+    openMic().then(function(st){ go(!!st); }, function(){ go(false); });
   }
   function stop(){
     wantListening=false; clearTimeout(restartTimer);
     if(runFrom){ accumSec += (Date.now()-runFrom)/1000; runFrom=null; }
     try{ if(rec) rec.stop(); }catch(e){}
+    if(cfg.engine==="gemini") { try{ cutChunk(); }catch(e){} }
     closeMic();
     recDot.classList.remove("live");
     btnToggle.textContent="録音を再開"; btnToggle.className="btn primary";
@@ -947,8 +1062,11 @@
   }
   function openMic(){
     if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return Promise.resolve(null);
+    // Only echo cancellation is harmful here (it removes the far end's voice
+    // coming out of the speakers). Gain control and noise suppression MUST stay
+    // on: speaker-relayed speech is quiet, and without AGC it is unintelligible.
     var audio = cfg.aecOff
-      ? { echoCancellation:false, noiseSuppression:false, autoGainControl:false }
+      ? { echoCancellation:false, noiseSuppression:true, autoGainControl:true }
       : true;
     return navigator.mediaDevices.getUserMedia({ audio: audio })
       .catch(function(){
@@ -964,6 +1082,7 @@
           var an = audioCtx.createAnalyser();
           an.fftSize = 1024;
           src.connect(an);
+          startCapture(audioCtx, src);
           var buf = new Uint8Array(an.fftSize), smooth = 0;
           (function loop(){
             meterRAF = requestAnimationFrame(loop);
@@ -978,7 +1097,130 @@
         return st;
       });
   }
+  /* ---- PCM capture for the high-accuracy engine ----
+     Chrome's MediaRecorder only emits webm/opus, which the Gemini API does not
+     accept, so we tap the graph and build 16 kHz mono WAV chunks ourselves. */
+  var SEND_RATE = 16000;
+  var pcmProc=null, pcmBuf=[], pcmSamples=0, pcmRate=48000, chunkTimer=null;
+  var chunkStartSec=0, sending=false, chunkQueue=[], sttFails=0;
+
+  function startCapture(ctx, src){
+    try{
+      pcmRate = ctx.sampleRate || 48000;
+      pcmProc = ctx.createScriptProcessor(4096, 1, 1);
+      var mute = ctx.createGain();
+      mute.gain.value = 0;
+      pcmProc.onaudioprocess = function(ev){
+        if(cfg.engine !== "gemini") return;
+        var ch = ev.inputBuffer.getChannelData(0);
+        pcmBuf.push(new Float32Array(ch));
+        pcmSamples += ch.length;
+      };
+      src.connect(pcmProc);
+      pcmProc.connect(mute);
+      mute.connect(ctx.destination);
+    }catch(e){}
+  }
+  function stopCapture(){
+    if(chunkTimer){ clearInterval(chunkTimer); chunkTimer=null; }
+    if(pcmProc){ try{ pcmProc.disconnect(); }catch(e){} pcmProc=null; }
+    pcmBuf=[]; pcmSamples=0;
+  }
+  function takeChunk(){
+    if(!pcmSamples) return null;
+    var total=pcmSamples, flat=new Float32Array(total), o=0;
+    for(var i=0;i<pcmBuf.length;i++){ flat.set(pcmBuf[i], o); o+=pcmBuf[i].length; }
+    pcmBuf=[]; pcmSamples=0;
+    return flat;
+  }
+  function downsample(flat, inRate, outRate){
+    if(outRate>=inRate) return flat;
+    var ratio=inRate/outRate, len=Math.floor(flat.length/ratio), out=new Float32Array(len);
+    for(var j=0;j<len;j++){
+      var a=Math.floor(j*ratio), b=Math.floor((j+1)*ratio), sum=0, n=0;
+      for(var k=a;k<b&&k<flat.length;k++){ sum+=flat[k]; n++; }
+      out[j] = n ? sum/n : 0;
+    }
+    return out;
+  }
+  function encodeWav(samples, rate){
+    var buf=new ArrayBuffer(44+samples.length*2), v=new DataView(buf);
+    function ws(off,str){ for(var i=0;i<str.length;i++) v.setUint8(off+i, str.charCodeAt(i)); }
+    ws(0,"RIFF"); v.setUint32(4, 36+samples.length*2, true); ws(8,"WAVE");
+    ws(12,"fmt "); v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,1,true);
+    v.setUint32(24,rate,true); v.setUint32(28,rate*2,true); v.setUint16(32,2,true); v.setUint16(34,16,true);
+    ws(36,"data"); v.setUint32(40, samples.length*2, true);
+    for(var i=0,o=44;i<samples.length;i++,o+=2){
+      var x=Math.max(-1,Math.min(1,samples[i]));
+      v.setInt16(o, x<0 ? x*0x8000 : x*0x7FFF, true);
+    }
+    return new Blob([buf], {type:"audio/wav"});
+  }
+  function blobToB64(blob){
+    return new Promise(function(res,rej){
+      var r=new FileReader();
+      r.onload=function(){ res(String(r.result).split(",")[1]||""); };
+      r.onerror=rej;
+      r.readAsDataURL(blob);
+    });
+  }
+  function peakOf(a){ var p=0; for(var i=0;i<a.length;i+=8){ var d=Math.abs(a[i]); if(d>p) p=d; } return p; }
+
+  function cutChunk(){
+    var flat=takeChunk();
+    var startedAtSec=chunkStartSec;
+    chunkStartSec=Math.round(elapsedSec());
+    if(!flat || flat.length < SEND_RATE/2) return;
+    if(peakOf(flat) < 0.012) return;            // silence: don't spend quota
+    chunkQueue.push({ pcm:flat, t:startedAtSec });
+    if(chunkQueue.length > 6) chunkQueue.shift(); // never let a backlog grow without bound
+    pumpQueue();
+  }
+  function pumpQueue(){
+    if(sending || !chunkQueue.length) return;
+    if(!hasKey() || cfg.provider!=="gemini") { chunkQueue=[]; return; }
+    var item=chunkQueue.shift();
+    sending=true;
+    sumStamp.dataset.stt = "1";
+    var small = downsample(item.pcm, pcmRate, SEND_RATE);
+    blobToB64(encodeWav(small, SEND_RATE))
+      .then(function(b64){
+        return PROVIDERS.gemini.transcribe(cfg.key.trim(), modelFor("gemini"), b64, undefined);
+      })
+      .then(function(text){
+        sttFails=0;
+        var t=String(text||"").trim();
+        if(t){
+          t.split(/\n+/).forEach(function(seg){
+            seg=seg.trim();
+            if(!seg) return;
+            howto.hidden=true;
+            var line={t:item.t, s:seg};
+            lines.push(line); appendLineEl(line);
+          });
+          scrollStream(false); scheduleSave();
+        }
+      })
+      .catch(function(e){
+        sttFails++;
+        var msg=friendlyError(e);
+        if(sttFails===1 && msg) toast("文字起こし: "+msg);
+        if(sttFails>=4){
+          cfg.engine="browser"; saveCfg(); chunkQueue=[];
+          showNotice("Geminiでの文字起こしが続けて失敗したため、ブラウザ内蔵の方式に戻しました。設定から原因を確認できます。", true,
+            [{ label:"設定を開く", onClick:openDlg }]);
+          if(wantListening) safeStart();
+        }
+      })
+      .then(function(){
+        sending=false;
+        delete sumStamp.dataset.stt;
+        pumpQueue();
+      });
+  }
+
   function closeMic(){
+    stopCapture();
     if(meterRAF){ cancelAnimationFrame(meterRAF); meterRAF=null; }
     setMeter(0);
     if(micStream){ micStream.getTracks().forEach(function(t){ try{ t.stop(); }catch(e){} }); micStream=null; }
@@ -995,7 +1237,7 @@
   document.addEventListener("visibilitychange", function(){
     if(document.visibilityState==="visible" && wantListening){
       requestWakeLock();
-      if(!listening) safeStart();
+      if(!listening && cfg.engine!=="gemini") safeStart();
     }
   });
 
@@ -1090,6 +1332,7 @@
 
   /* ==================== tick ==================== */
   setInterval(function(){
+    setEngineTag();
     var live=wantListening;
     mElapsed.textContent=mmss(elapsedSec());
     mElapsed.className="v"+(live?"":" muted");
@@ -1158,6 +1401,17 @@
   provSeg.addEventListener("click", function(ev){
     var b=ev.target.closest("button[data-prov]"); if(!b) return;
     cfg.provider=b.dataset.prov;
+    if(cfg.provider!=="gemini") cfg.engine="browser";
+    renderDlg();
+  });
+  chunkSeg.addEventListener("click", function(ev){
+    var b=ev.target.closest("button[data-chunk]"); if(!b) return;
+    cfg.chunkSec=Number(b.dataset.chunk);
+    renderDlg();
+  });
+  engineSeg.addEventListener("click", function(ev){
+    var b=ev.target.closest("button[data-engine]"); if(!b||b.disabled) return;
+    cfg.engine=b.dataset.engine;
     renderDlg();
   });
   btnPeek.addEventListener("click", function(){
@@ -1169,6 +1423,9 @@
     cfg.key = keyInput.value.trim();
     cfg.models[cfg.provider] = modelInput.value.trim() || PROVIDERS[cfg.provider].defaultModel;
     cfg.aecOff = aecOffBox.checked;
+    if(cfg.provider !== "gemini") cfg.engine = "browser";
+    // a running session picks the new interval up on the next start
+
     saveCfg(); syncAiButtons();
     dlg.close();
     toast(hasKey() ? PROVIDERS[cfg.provider].name+"を使う設定にしました" : "キーが空のままです");
