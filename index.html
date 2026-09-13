@@ -404,6 +404,21 @@
     </div>
 
     <div class="row">
+      <label>音の取り込み方</label>
+      <label class="switch" for="sysAudio" style="font-size:13.5px;color:var(--ink)">
+        <input type="checkbox" id="sysAudio">
+        パソコンの音を直接取り込む（いちばん効きます）
+      </label>
+      <p class="help">スピーカーから出る前の音をそのまま使うので、相手の声が格段にきれいになります。「録音を開始」を押すと共有の画面が出るので、<b>「画面全体」を選び、左下の「システム音声も共有する」に必ずチェック</b>を入れてください。画面の映像はどこにも送られず、音声だけ使います。</p>
+    </div>
+
+    <div class="row">
+      <label for="hintsInput">よく出る言葉（任意）</label>
+      <input class="txt" id="hintsInput" type="text" autocomplete="off" placeholder="山田部長、サポロポテト、第3四半期、AiNote">
+      <p class="help">人名・社名・商品名・専門用語を読点で区切って入れておくと、その表記で書き起こされます。固有名詞の取り違えがぐっと減ります。</p>
+    </div>
+
+    <div class="row">
       <label>マイクの拾い方</label>
       <label class="switch" for="aecOff" style="font-size:13.5px;color:var(--ink)">
         <input type="checkbox" id="aecOff" checked>
@@ -446,7 +461,8 @@
       keyUrl: "https://aistudio.google.com/apikey",
       keyHelp: 'Google AI Studio で無料で作れます。上のリンクを開いて「Create API key」。AIza… で始まる文字列です。',
       help: "無料枠がいちばん大きく、日本語も安定しています。迷ったらこれ。",
-      transcribe: function (key, model, b64wav, signal) {
+      transcribe: function (key, model, b64wav, signal, hints) {
+        var vocab = String(hints||"").trim();
         return fetch(
           "https://generativelanguage.googleapis.com/v1beta/models/" +
             encodeURIComponent(model) + ":generateContent?key=" + encodeURIComponent(key),
@@ -461,7 +477,8 @@
                   "・聞き取れた発言だけを書く。話者が変わったら改行する。\n" +
                   "・言い淀み（えー、あのー）は省く。句読点は補う。\n" +
                   "・どうしても聞き取れない部分は書かない。何も聞き取れなければ空で返す。\n" +
-                  "・前置き、説明、記号は書かない。文字起こしの本文だけを返す。" },
+                  "・前置き、説明、記号は書かない。文字起こしの本文だけを返す。" +
+                  (vocab ? "\n\nこの会話には次の固有名詞・用語が出てきます。似た音が聞こえたらこの表記を使ってください:\n" + vocab : "") },
                 { inline_data: { mime_type: "audio/wav", data: b64wav } }
               ]}],
               generationConfig: { temperature: 0, maxOutputTokens: 2048 }
@@ -641,7 +658,7 @@
   var MIN_NEW_CHARS = 100;
   var MAX_CHUNK_CHARS = 14000;
 
-  var cfg = { provider:"gemini", key:"", models:{}, aecOff:true, engine:"browser", chunkSec:25 };
+  var cfg = { provider:"gemini", key:"", models:{}, aecOff:true, engine:"browser", chunkSec:25, sysAudio:false, hints:"" };
   var mode = "meeting", autoMs = 120000;
   var lines = [], summary = null;
   var startedAt = null, accumSec = 0, runFrom = null;
@@ -663,6 +680,7 @@
   var btnTest=$("btnTest"), btnForget=$("btnForget"), btnSaveKey=$("btnSaveKey"), testOut=$("testOut");
   var aecOffBox=$("aecOff"), vuBar=$("vuBar"), engineSeg=$("engineSeg"), engineHelp=$("engineHelp");
   var engineTag=$("engineTag"), chunkSeg=$("chunkSeg"), chunkHelp=$("chunkHelp");
+  var sysAudioBox=$("sysAudio"), hintsInput=$("hintsInput");
   var interimEl = null;
 
   /* ==================== helpers ==================== */
@@ -704,6 +722,8 @@
       cfg.aecOff = d.aecOff !== false;
       cfg.engine = d.engine === "gemini" ? "gemini" : "browser";
       cfg.chunkSec = (d.chunkSec===60) ? 60 : 25;
+      cfg.sysAudio = d.sysAudio === true;
+      cfg.hints = typeof d.hints==="string" ? d.hints : "";
     } } catch(e){} }
   }
   function saveCfg(){ store(LS_CFG, JSON.stringify(cfg)); }
@@ -740,6 +760,8 @@
     chunkHelp.textContent = cfg.chunkSec===60
       ? "2時間で約120回Geminiを呼びます。長い研修でも無料枠に収まりやすい設定です。画面に出るまで1分ほどかかります。"
       : "2時間で約290回Geminiを呼びます。反応は速いですが、半日以上の研修だと無料の1日あたり上限に届くことがあります。その場合は60秒ごとに。";
+    sysAudioBox.checked = cfg.sysAudio === true;
+    hintsInput.value = cfg.hints || "";
     aecOffBox.checked = cfg.aecOff !== false;
     keyInput.value = cfg.key || "";
     keyInput.type = "password";
@@ -752,7 +774,8 @@
 
   function setEngineTag(){
     if(cfg.engine==="gemini" && cfg.provider==="gemini" && hasKey()){
-      engineTag.textContent = sending ? "Gemini文字起こし・送信中" : "Gemini文字起こし（25秒ごと）";
+      engineTag.textContent = (sending ? "Gemini文字起こし・送信中" : "Gemini文字起こし（"+(cfg.chunkSec||25)+"秒ごと）")
+        + (sysStream ? "・PC音声あり" : "");
       engineTag.className = "stamp" + (sending ? " working" : "");
     } else {
       engineTag.textContent = "";
@@ -1035,7 +1058,7 @@
         safeStart();
       }
     };
-    setTimeout(function(){ go(false); }, 2500);
+    setTimeout(function(){ go(false); }, cfg.sysAudio ? 45000 : 2500);
     openMic().then(function(st){ go(!!st); }, function(){ go(false); });
   }
   function stop(){
@@ -1060,42 +1083,85 @@
     vuBar.style.width = (pct*100).toFixed(0) + "%";
     vuBar.className = pct > 0.85 ? "hot" : "";
   }
+  /* ---- audio input ----
+     The far end reaches the built-in microphone only after going out through
+     the speakers and back across the room, which is where most of the quality
+     is lost. getDisplayMedia with system audio taps that same sound digitally,
+     before it is ever played, so we mix that with the microphone (which now
+     only has to carry the near end) and transcribe the result. */
+  var sysStream=null;
+
+  function buildGraph(micSt, sysSt){
+    try{
+      audioCtx = new (window.AudioContext||window.webkitAudioContext)();
+      var mix = audioCtx.createGain();
+      mix.gain.value = 1;
+      if(micSt) audioCtx.createMediaStreamSource(micSt).connect(mix);
+      if(sysSt){
+        var g = audioCtx.createGain();
+        g.gain.value = 1.4;           // call audio is usually mastered quiet
+        audioCtx.createMediaStreamSource(sysSt).connect(g);
+        g.connect(mix);
+      }
+      var an = audioCtx.createAnalyser();
+      an.fftSize = 1024;
+      mix.connect(an);
+      startCapture(audioCtx, mix);
+      var buf = new Uint8Array(an.fftSize), smooth = 0;
+      (function loop(){
+        meterRAF = requestAnimationFrame(loop);
+        an.getByteTimeDomainData(buf);
+        var peak = 0;
+        for(var i=0;i<buf.length;i++){ var d=Math.abs(buf[i]-128); if(d>peak) peak=d; }
+        var lvl = Math.min(1, peak/55);
+        smooth = lvl > smooth ? lvl : smooth*0.88 + lvl*0.12;
+        setMeter(smooth);
+      })();
+    }catch(e){}
+  }
+
   function openMic(){
     if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return Promise.resolve(null);
-    // Only echo cancellation is harmful here (it removes the far end's voice
-    // coming out of the speakers). Gain control and noise suppression MUST stay
-    // on: speaker-relayed speech is quiet, and without AGC it is unintelligible.
-    var audio = cfg.aecOff
+
+    var wantSys = !!cfg.sysAudio && !!navigator.mediaDevices.getDisplayMedia;
+
+    // With system audio in hand the microphone only needs the near end, so
+    // echo cancellation goes back ON — it stops the speakers bleeding in twice.
+    var audio = (cfg.aecOff && !wantSys)
       ? { echoCancellation:false, noiseSuppression:true, autoGainControl:true }
       : true;
-    return navigator.mediaDevices.getUserMedia({ audio: audio })
-      .catch(function(){
-        // some devices refuse the relaxed constraints outright
-        return navigator.mediaDevices.getUserMedia({ audio: true }).catch(function(){ return null; });
-      })
-      .then(function(st){
-        if(!st) return null;
-        micStream = st;
-        try{
-          audioCtx = new (window.AudioContext||window.webkitAudioContext)();
-          var src = audioCtx.createMediaStreamSource(st);
-          var an = audioCtx.createAnalyser();
-          an.fftSize = 1024;
-          src.connect(an);
-          startCapture(audioCtx, src);
-          var buf = new Uint8Array(an.fftSize), smooth = 0;
-          (function loop(){
-            meterRAF = requestAnimationFrame(loop);
-            an.getByteTimeDomainData(buf);
-            var peak = 0;
-            for(var i=0;i<buf.length;i++){ var d=Math.abs(buf[i]-128); if(d>peak) peak=d; }
-            var lvl = Math.min(1, peak/55);
-            smooth = lvl > smooth ? lvl : smooth*0.88 + lvl*0.12;
-            setMeter(smooth);
-          })();
-        }catch(e){}
-        return st;
-      });
+
+    // getDisplayMedia must be reached inside the click, so it goes first.
+    var sysP = wantSys
+      ? navigator.mediaDevices.getDisplayMedia({ video:true, audio:true })
+          .then(function(st){
+            if(!st) return null;
+            if(!st.getAudioTracks().length){
+              st.getTracks().forEach(function(t){ try{ t.stop(); }catch(e){} });
+              showNotice("画面は共有されましたが音声が含まれていません。もう一度「録音を開始」を押して、共有の画面で「システム音声も共有する」にチェックを入れてください。", true);
+              return null;
+            }
+            st.getAudioTracks()[0].addEventListener("ended", function(){
+              if(wantListening) showNotice("パソコンの音の取り込みが止まりました。相手の声はマイク経由になります。", true);
+            });
+            return st;
+          })
+          .catch(function(){ return null; })
+      : Promise.resolve(null);
+
+    return sysP.then(function(sysSt){
+      sysStream = sysSt;
+      return navigator.mediaDevices.getUserMedia({ audio: audio })
+        .catch(function(){
+          return navigator.mediaDevices.getUserMedia({ audio: true }).catch(function(){ return null; });
+        })
+        .then(function(micSt){
+          micStream = micSt;
+          if(!micSt && !sysSt) return null;
+          buildGraph(micSt, sysSt);
+          return micSt || sysSt;
+        });
+    });
   }
   /* ---- PCM capture for the high-accuracy engine ----
      Chrome's MediaRecorder only emits webm/opus, which the Gemini API does not
@@ -1183,9 +1249,14 @@
     sending=true;
     sumStamp.dataset.stt = "1";
     var small = downsample(item.pcm, pcmRate, SEND_RATE);
+    var pk = peakOf(small);
+    if(pk > 0.005 && pk < 0.85){                 // lift quiet chunks toward full scale
+      var gain = Math.min(12, 0.85/pk);
+      for(var gi=0; gi<small.length; gi++) small[gi] = Math.max(-1, Math.min(1, small[gi]*gain));
+    }
     blobToB64(encodeWav(small, SEND_RATE))
       .then(function(b64){
-        return PROVIDERS.gemini.transcribe(cfg.key.trim(), modelFor("gemini"), b64, undefined);
+        return PROVIDERS.gemini.transcribe(cfg.key.trim(), modelFor("gemini"), b64, undefined, cfg.hints);
       })
       .then(function(text){
         sttFails=0;
@@ -1224,6 +1295,7 @@
     if(meterRAF){ cancelAnimationFrame(meterRAF); meterRAF=null; }
     setMeter(0);
     if(micStream){ micStream.getTracks().forEach(function(t){ try{ t.stop(); }catch(e){} }); micStream=null; }
+    if(sysStream){ sysStream.getTracks().forEach(function(t){ try{ t.stop(); }catch(e){} }); sysStream=null; }
     if(audioCtx){ try{ audioCtx.close(); }catch(e){} audioCtx=null; }
   }
 
@@ -1423,6 +1495,8 @@
     cfg.key = keyInput.value.trim();
     cfg.models[cfg.provider] = modelInput.value.trim() || PROVIDERS[cfg.provider].defaultModel;
     cfg.aecOff = aecOffBox.checked;
+    cfg.sysAudio = sysAudioBox.checked;
+    cfg.hints = hintsInput.value.trim();
     if(cfg.provider !== "gemini") cfg.engine = "browser";
     // a running session picks the new interval up on the next start
 
